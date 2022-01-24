@@ -1,0 +1,466 @@
+---
+title: "Credit Default Classification for Credit Card Holders"
+author: "Leah Ung"
+date: "5/18/2021"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+---
+
+### Install packages
+
+```{r}
+library("readxl")
+library("class")
+library("MASS")
+library("plotROC")
+library("ggplot2")
+library("ISLR")
+library("leaps")
+library("glmnet")
+library("pls")
+library("tree")
+library("randomForest")
+```
+
+
+
+### Load and View data
+
+```{r}
+Credit = read_xls("./DefaultCreditDatasets/Credit.xls")
+attach(Credit)
+```
+
+### Get a glimpse of the data
+
+```{r}
+library(dplyr)
+glimpse(Credit)
+```
+
+### List all the variables in this dataset
+
+```{r}
+names(Credit)
+```
+
+### Get the numerical summary of data
+
+```{r}
+summary(Credit)
+```
+
+
+### Are there any missing values in this dataset?
+
+```{r}
+sum(is.na(Credit))
+```
+
+
+### Investigate the Default variable and its distribution
+```{r}
+DEFAULT = as.factor(DEFAULT)
+table1 = table(DEFAULT)
+table1
+pie1 = c (0,1)
+names(pie1) = c("No","Yes")
+pie1 = pie(table1, labels = names(pie1), radius = 1, main = "Pie Chart of Number of Defaults")
+DEFAULT = as.numeric(DEFAULT)
+```
+
+### Investigate the Education variable and its distribution
+
+```{r}
+EDUCATION = as.factor(EDUCATION)
+EDUCATION[EDUCATION==5]=0
+EDUCATION[EDUCATION==6]=0
+table2 = table(EDUCATION)
+table2
+pie2 = c(0, 1, 2, 3, 4)
+names(pie2) = c("Unknown","Graduate School", "College", "High School", "Others")
+pie2 = pie(table2, labels = names(pie2), radius =1, main = "Pie Chart of Education Distribution")
+EDUCATION = as.numeric(EDUCATION)
+```
+
+### Investigate the Marriage variable and its distribution
+
+```{r}
+MARRIAGE = as.factor(MARRIAGE)
+table3 = table(MARRIAGE)
+table3
+pie3 = c(0,1,2,3)
+names(pie3) = c("Unknown", "Married", "Single", "Others")
+pie3 = pie(table3,labels = names(pie3), radius =1, main = "Pie Chart of Marriage Distribution")
+MARRIAGE = as.numeric(MARRIAGE)
+```
+
+
+### Investigate the GENDER variable and its distribution
+```{r}
+GENDER = as.factor(GENDER)
+table4 = table(GENDER)
+pie4 = c (1,2)
+names(pie4) = c ("Male", "Female")
+pie4 = pie(table4, labels = names(pie4), radius = 1, main = "Pie Chart of Gender Distribution")
+GENDER = as.numeric(GENDER)
+```
+
+
+
+### Split dataset into training and test sets (80-20 split)
+
+```{r}
+#Split the data set into training set and test set
+x = model.matrix(DEFAULT~.,Credit)[,-1]
+y = Credit$DEFAULT
+
+trainingRows = sample(1:nrow(Credit), 0.8*nrow(Credit))
+train = Credit[trainingRows, ]
+test = Credit[-trainingRows, ]
+
+#Standardize X train and X test
+X_SD = scale(x) # standardize the data
+Xtrain = X_SD[trainingRows,]
+Xtest = X_SD[-trainingRows,]
+
+#Define Y train and Y test
+Ytrain = y[trainingRows]
+Ytest = y[-trainingRows] 
+```
+
+
+### Best Subset Selection
+
+```{r}
+regfit.full = regsubsets(DEFAULT~., data = Credit, nvmax = 24)
+reg.summary = summary(regfit.full)
+names(reg.summary)
+reg.summary$rsq #R-squared statistic
+
+# Plot RSS, adjusted R^2, Cp, and BIC statistics
+par(mfrow = c(2,2))
+plot(reg.summary$rss, xlab = "Number of variables", ylab = "RSS", type = "l") #plot RSS
+which.min(reg.summary$rss) #output the model with the smallest RSS
+points(24, reg.summary$rss[24], col = "red", cex = 2, pch = 20)
+plot(reg.summary$adjr2, xlab = "Number of variables", ylab = "Adjusted Rsq", type = "l") #plot adjusted R-squared
+which.max(reg.summary$adjr2) #output the model with the largest adjusted Rsq
+points(15, reg.summary$adjr2[15], col = "red", cex = 2, pch = 20)
+plot(reg.summary$cp, xlab = "Number of variables", ylab = "Cp", type = "l")
+which.min(reg.summary$cp)
+points(15, reg.summary$cp[15], col = "red", cex = 2, pch = 20)
+plot(reg.summary$bic, xlab = "Number of variables", ylab = "BIC", type = "l")
+which.min(reg.summary$bic)
+points(9, reg.summary$bic[9], col = "red", cex = 2, pch = 20)
+
+par(mfrow = c(2,2))
+plot(regfit.full, scale = "r2")
+plot(regfit.full, scale = "adjr2")
+plot(regfit.full, scale = "Cp")
+plot(regfit.full, scale = "bic")
+
+coef(regfit.full, 9) # coefficient estimates of the best model
+```
+
+
+### Choosing among Models Using the Validation Set Approach and Cross-Validation
+
+```{r}
+# Validation Set Approach
+set.seed(1)
+train.cv = sample(c(TRUE,FALSE), nrow(Credit), rep=TRUE)
+test.cv = (!train.cv)
+regfit.best = regsubsets(DEFAULT~., data = Credit[train.cv,], nvmax = 24)
+test.mat = model.matrix(DEFAULT~., data = Credit[test.cv,])
+val.errors=rep(NA,24)
+for(i in 1:24){
+coefi = coef(regfit.best,id=i)
+pred = test.mat[,names(coefi)]%*%coefi
+val.errors[i]=mean((Credit$DEFAULT[test.cv]-pred)^2)
+}
+val.errors
+which.min(val.errors)
+coef(regfit.best,18)
+
+# Write our own function
+predict.regsubsets = function(object,newdata,id,...){
+  form=as.formula(object$call[[2]])
+  mat=model.matrix(form,newdata)
+  coefi=coef(object,id=id)
+  xvars=names(coefi)
+  mat[,xvars]%*%coefi
+}
+
+# Use cross-validation
+regfit.best = regsubsets(DEFAULT~., data = Credit, nvmax=24)
+coef(regfit.best, 18)
+k=18
+set.seed(1)
+folds = sample(1:k, nrow(Credit), replace=TRUE)
+cv.errors = matrix(NA,k,24,dimnames=list(NULL,paste(1:24)))
+
+# Perform best subset selection within each of the k training sets
+for(j in 1:k){
+  best.fit = regsubsets(DEFAULT~., data = Credit[folds!=j,], nvmax=24)
+  for(i in 1:24){
+    pred = predict(best.fit, Credit[folds==j, ], id=i)
+    cv.errors[j,i] = mean((Credit$DEFAULT[folds==j]-pred)^2)
+  }}
+
+mean.cv.errors = apply(cv.errors, 2, mean)
+mean.cv.errors
+par(mfrow=c(1,1))
+plot(mean.cv.errors,type="b")
+reg.best = regsubsets(DEFAULT~., data = Credit, nvmax = 24)
+coef(reg.best, 19)
+```
+
+### Logistic Regression 
+
+#### Logistic regression with DEFAULT as the response and all other variables as predictors using the training dataset
+
+```{r}
+glm.fit = glm(DEFAULT ~., data = train, family = binomial)
+summary(glm.fit)
+glm.probs = predict(glm.fit, test, type = "response")
+glm.pred = rep(0, nrow(test))
+glm.pred[glm.probs > 0.5] = 1
+table(glm.pred, test$DEFAULT)  # confusion matrix
+mean(glm.pred == test$DEFAULT) # correct prediction rate 
+```
+ 
+#### Logistic regression fit on the model selected by cross-validation
+
+```{r}
+glm.fit1 = glm(DEFAULT ~ LIMIT_BAL+ GENDER + EDUCATION + MARRIAGE + AGE + PAY_1  + PAY_2 +
+               PAY_3 + PAY_4 + PAY_5 + BILL_AMT1 + BILL_AMT2 + BILL_AMT4 + BILL_AMT6 + PAY_AMT1 +
+               PAY_AMT2 + PAY_AMT4 + PAY_AMT5  + PAY_AMT6 , data = train, family = binomial)
+glm.probs = predict(glm.fit1, test, type = "response")
+glm.pred = rep(0, nrow(test))
+glm.pred[glm.probs > 0.5] = 1
+table(glm.pred, test$DEFAULT) # confusion matrix
+mean(glm.pred == test$DEFAULT) # accuracy rate
+```
+
+
+#### Logistic regression fit on the model selected by best subset selection
+
+```{r}
+glm.fit2 = glm(DEFAULT ~ LIMIT_BAL + EDUCATION +  MARRIAGE + AGE + PAY_1 + PAY_2 + PAY_3 +
+               BILL_AMT1 + PAY_AMT1, data = train, family = binomial)
+glm.probs = predict(glm.fit2, test, type = "response")
+glm.pred = rep(0, nrow(test))
+glm.pred[glm.probs > 0.5] = 1
+table(glm.pred, test$DEFAULT) # confusion matrix
+mean(glm.pred == test$DEFAULT) # accuracy rate
+```
+
+
+### K-Nearest Neighbors
+
+```{r}
+set.seed(1)
+knn.pred1 = knn(Xtrain, Xtest, Ytrain, k = 1)
+mean(Ytest != knn.pred1) # test error rate
+mean(Ytest == knn.pred1) # accuracy rate
+
+knn.pred2 =  knn(Xtrain, Xtest, Ytrain, k = 5)
+mean(Ytest != knn.pred2) # test error rate
+mean(Ytest == knn.pred2) # accuracy rate
+
+knn.pred3 =  knn(Xtrain, Xtest, Ytrain, k = 10)
+mean(Ytest != knn.pred3) # test error rate
+mean(Ytest == knn.pred3) # accuracy rate
+table(knn.pred3, Ytest) # confusion matrix
+```
+
+
+
+### Linear Discriminant Analysis 
+
+#### LDA fit on the best subset selection model
+
+```{r}
+train = sample(1:nrow(Credit), 0.8*nrow(Credit))
+lda.fit = lda(DEFAULT ~ LIMIT_BAL + EDUCATION +  MARRIAGE + AGE + PAY_1 + PAY_2 + PAY_3 +
+              BILL_AMT1 + PAY_AMT1, data = Credit, subset = train)
+lda.fit
+plot(lda.fit)
+lda.pred = predict(lda.fit, test)
+names(lda.pred) 
+lda.pred$class[1]
+lda.pred$posterior[1, ] # output the probability that the customer will default or not default
+lda.class = lda.pred$class # the predicted class for each observation in test data
+sum(lda.pred$posterior[ ,1] >= 0.5) # total number of test observations classified as "Yes"
+sum(lda.pred$posterior[ ,1] < 0.5) # total number of test observations classified as "No"
+lda.pred$posterior[1:25, 1]
+table(lda.class, test$DEFAULT) # confusion matrix
+mean(lda.class == test$DEFAULT) # prediction accuracy
+```
+
+
+### Ridge Regression
+
+```{r}
+grid = 10^seq(10, -2, length = 100) #grid of lambda
+set.seed(1)
+ridge.mod = glmnet(Xtrain, Ytrain, alpha = 0, lambda = grid, thresh = 1e-12, family = "binomial")
+
+#Ridge fit when Lambda=4
+ridge.pred = predict(ridge.mod, s = 4, newx = Xtest) #lambda = 4
+predicted.classes = ifelse(ridge.pred > 0.5, 1, 0)
+mean(predicted.classes == Ytest)
+mean((ridge.pred-Ytest)^2) #test MSE 
+
+#Ridge fit when Lambda=1e10
+ridge.pred = predict(ridge.mod, s = 1e10, newx = Xtest) #close to intercept fit
+predicted.classes = ifelse(ridge.pred > 0.5, 1, 0)
+mean(predicted.classes == Ytest)
+mean((ridge.pred-Ytest)^2) #test MSE
+
+#Ridge fit when Lambda=0
+ridge.pred = predict(ridge.mod, s=0, x = Xtrain, y = Ytrain,
+                     newx = Xtest, exact = T)#linear regression fit
+predicted.classes = ifelse(ridge.pred > 0.5, 1, 0)
+mean(predicted.classes == Ytest)
+mean((ridge.pred-Ytest)^2) #test MSE
+
+# Use CV to find best lambda
+set.seed(1)
+cv.out1 = cv.glmnet(Xtrain, Ytrain, alpha=0)
+plot(cv.out1)
+bestlam_ridge = cv.out1$lambda.min
+bestlam_ridge
+
+#Ridge fit using best Lambda
+ridge.pred = predict(ridge.mod, s=bestlam_ridge, newx = Xtest)
+predicted.classes = ifelse(ridge.pred > 0.5, 1, 0)
+mean(predicted.classes == Ytest)
+mean((ridge.pred-Ytest)^2) #test MSE 
+
+
+#Refit on the full data set, using the "best" lambda
+out.ridge = glmnet(x, y, alpha=0)
+ridge.pred = predict(out.ridge, type = "coefficients", s = bestlam_ridge)[1:25,]
+ridge.pred
+predicted.classes = ifelse(ridge.pred > 0.5, 1, 0)
+mean(predicted.classes == Ytest)
+mean((ridge.pred-Ytest)^2) #test MSE 
+
+```
+
+### The Lasso
+```{r}
+lasso.mod = glmnet(Xtrain, Ytrain, alpha=1, lambda=grid, family = binomial)
+plot(lasso.mod) #coefficient plot
+
+#Use CV to find best lambda
+set.seed(1)
+cv.out2 = cv.glmnet(Xtrain, Ytrain, alpha=1)
+plot(cv.out2) #CV error plot
+bestlam_lasso = cv.out2$lambda.min 
+bestlam_lasso
+
+lasso.pred = predict(lasso.mod, s=bestlam_lasso, newx=Xtest)
+predicted.classes = ifelse(lasso.pred > 0.5, 1, 0)
+mean(predicted.classes == Ytest) #prediction accuracy
+mean((lasso.pred-Ytest)^2) #test MSE
+
+out.lasso = glmnet(x, y, alpha=1, lambda=grid, family = binomial)
+lasso.coef = predict(out.lasso, type="coefficients", s=bestlam_lasso)
+lasso.coef
+lasso.coef[lasso.coef!=0]
+
+predicted.classes = ifelse(lasso.coef > 0.5, 1, 0)
+mean(predicted.classes == Ytest) #prediction accuracy
+
+```
+
+
+### Principal Component Regression
+
+```{r}
+set.seed(2)
+pcr.fit1 = pcr(DEFAULT~., data=Credit, scale=TRUE, validation="CV")
+summary(pcr.fit1)
+
+validationplot(pcr.fit1,val.type="MSEP") #MSE plotted
+set.seed(1)
+pcr.fit2 = pcr(DEFAULT~., data=Credit, subset=train, scale=TRUE, validation="CV")
+validationplot(pcr.fit2, val.type="MSEP") #the lowest CV error occurs when M=18
+
+pcr.pred = predict(pcr.fit2, Xtest, ncomp=18)
+predicted.classes = ifelse(pcr.pred > 0.5, 1, 0)
+mean(predicted.classes == Ytest) #prediction accuracy
+mean((pcr.pred-Ytest)^2) #test MSE
+
+pcr.fit3 = pcr(y~x, scale=TRUE, ncomp=18) #refit the whole data
+summary(pcr.fit3)
+```
+
+
+
+
+### Decision Trees: Fitting Classification Trees
+```{r}
+Credit$DEFAULT = as.factor(Credit$DEFAULT)
+Credit1 = data.frame(Credit)
+credit.train = Credit1[trainingRows,]
+credit.test = Credit1[-trainingRows,]
+Default.test = Credit1$DEFAULT[-trainingRows]
+
+tree.credit = tree(DEFAULT~.,Credit1)
+summary(tree.credit)
+
+#display structure only
+plot(tree.credit)                   
+#text() function to display node labels
+text(tree.credit, pretty=0)
+
+tree.pred=predict(tree.credit,credit.test,type = "class")
+table(tree.pred,Default.test) 
+mean(tree.pred==Default.test) #prediction accuracy
+
+#pruning the tree
+set.seed(1)
+cv.credit=cv.tree(tree.credit,FUN=prune.misclass)
+names(cv.credit)
+cv.credit
+par(mfrow=c(1,2))
+plot(cv.credit$size,cv.credit$dev,type="b")
+plot(cv.credit$k,cv.credit$dev,type="b")
+
+prune.credit=prune.misclass(tree.credit,best=3)
+plot(prune.credit)
+text(prune.credit,pretty=0)
+tree.pred=predict(prune.credit,credit.test,type="class")
+table(tree.pred,Default.test)
+mean(tree.pred==Default.test) #prediction accuracy
+
+```
+
+
+
+### Bagging and Random Forests
+
+```{r}
+#Perform bagging mtry = p 
+p=ncol(Credit1)-1
+bag.credit = randomForest(DEFAULT~., data = credit.train, mtry = p, importance = TRUE)
+bag.credit
+yhat.bag = predict(bag.credit, newdata = credit.test)
+mean(yhat.bag == Default.test) #prediction accuracy
+
+#Random forest with mtry = sqrt(p)
+rf.credit = randomForest(DEFAULT~., data = credit.train, mtry = sqrt(p), importance = TRUE)
+rf.credit
+yhat.rf = predict(rf.credit, newdata = credit.test)
+mean(yhat.rf == Default.test) #prediction accuracy
+importance(rf.credit)
+varImpPlot(rf.credit)
+```
+
